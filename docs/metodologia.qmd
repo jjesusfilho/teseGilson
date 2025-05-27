@@ -1,0 +1,627 @@
+---
+title: "relatorio"
+format: pdf
+bibliography: biblio.bib
+link-citations: true
+csl: http://www.zotero.org/styles/civitas-revista-de-ciencias-sociais
+nocite: |
+    @dplyr, @ggplot2, @quarto, @stringr, @RPostgres, @pander, @httr, 
+    @xml2, @flextable, @officer, @officedown, @knitr
+execute: 
+  echo: false
+  warning: false
+  message: false
+lang: pt
+language:
+  label:
+    tab: "Tabela "
+---
+
+```{r }
+#! label: pacotes-confifuguracoes
+library(tidyverse)
+library(flextable)
+library(officedown)
+library(officer)
+library(knitr)
+library(scales)
+# Format integers
+knit_print.integer = function(x, ...) {
+  prettyNum(x, big.mark=".", decimal.mark = ",")
+}
+
+registerS3method(
+  "knit_print", "integer", knit_print.integer,
+  envir = asNamespace("knitr")
+)
+
+# Format dates
+knit_print.Date = function(x, ...) {
+  format(x, "%d %B %Y")
+}
+
+registerS3method(
+  "knit_print", "Date", knit_print.Date,
+  envir = asNamespace("knitr")
+)
+
+fft<- function(ft, pgwidth = 6){
+
+  ft_out <- ft |> 
+colformat_num(big.mark = "", decimal.mark = ",", na_str = "N/A",
+digits = 0) |> 
+     autofit()
+
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+```
+
+```{r results = FALSE}
+#! label: conexão
+conn <- DBI::dbConnect(odbc::odbc(), Driver = "PostgreSQL Unicode", 
+                       Server = "localhost", Database = "projetos", UID = "postgres", 
+                  PWD = "8fxQv2VYYzEH7Mev")
+
+DBI::dbExecute(conn,"set search_path = gilson")
+```
+
+```{r}
+#! label: variaveis
+total = DBI::dbGetQuery(conn,"select count(*)::int as n from api_filtrada_com_entrancia") |> 
+       dplyr::pull(n)
+n_amostra_inicial <- DBI::dbGetQuery(conn,"select count(*)::int as n from amostra") |> 
+       dplyr::pull(n)
+n_amostra_ampliada <- DBI::dbGetQuery(conn,"select count(*)::int as n from historico_parte_coletado") |> 
+       dplyr::pull(n)
+
+arquivo <- here::here("data-raw/Pesquisa_CPA_2024_032303_Dr_GILSON (1).xlsx")
+planilhas <- openxlsx::getSheetNames(arquivo)
+
+acesso <- glue::glue("Acessado em {format(Sys.Date(), '%d de %B de %Y')}")
+
+lista <- planilhas |> 
+    purrr::map(~{
+      readxl::read_xlsx(arquivo, sheet = .x)
+      
+    })
+
+```
+
+
+```{r}
+#! label: funcoes
+atlas_extrair_series <- function(serie_id, abrangencia){
+  api <- "https://www.ipea.gov.br/atlasviolencia/"
+  glue::glue("{api}api/v1/valores-series/{serie_id}/{abrangencia}") |> 
+    httr2::request() |> 
+    httr2::req_perform() |> 
+    httr2::resp_body_string() |> 
+    jsonlite::fromJSON()
+}
+
+extrair_ssp_crimes <- function(ano=0){
+  
+url1 <- glue::glue("https://www.ssp.sp.gov.br/v1/OcorrenciasMensais/RecuperaDadosMensaisAgrupados?ano={ano}&grupoDelito=6&tipoGrupo=ESTADO&idGrupo=0")
+        
+url1 |> 
+  httr2::request() |> 
+  httr2::req_options(ssl_verifypeer = 0) |>
+  httr2::req_perform() |> 
+  httr2::resp_body_string() |> 
+  jsonlite::fromJSON()
+}
+
+extrair_ssp_produtividade <- function(ano = 0){
+  
+  url1 <- glue::glue("https://www.ssp.sp.gov.br/v1/OcorrenciasMensais/RecuperaDadosMensaisAgrupados?ano={ano}&grupoDelito=9&tipoGrupo=ESTADO&idGrupo=0")
+        
+url1 |> 
+  httr2::request() |> 
+  httr2::req_options(ssl_verifypeer = 0) |>
+  httr2::req_perform() |> 
+  httr2::resp_body_string() |> 
+  jsonlite::fromJSON()
+}
+  
+
+```
+
+## Introdução
+
+
+Esta seção busca verificar a hipótese de que o juiz de instrução e julgamento que atuou no controle do inquérito policial é afetado pelo viés de confirmação ou contaminação subjetiva. Segundo esse viés, o magistrado formaria sua convicção sobre o caso previamente à fase de instrução processual. 
+
+Nossa hipótese central é que a participação do juiz no controle do inquérito policial não gera tal viés, e sustentaremos essa hipótese com dados sobre criminalidade a resposta dos órgãos de justiça criminal: Polícia, Ministério Público, juiz de primeira instância e órgãos julgadores de segunda instância, argumentando que o segundo grau de jurisdição, em geral, atua como um filtro de maior rigor, garantindo a justiça e a legalidade das decisões. Para tanto, analisaremos dados sobre a criminalidade no Brasil e em São Paulo, a evolução dos casos ao longo do sistema de justiça criminal, e os resultados das apelações no Tribunal de Justiça de São Paulo
+
+Para testar o eventual viés de confirmação, faz-se necessário identificar metodologias adequadas para mensurar o fenômeno, o que representa um desafio significativo no campo das ciências sociais [@kellstedt2021fundamentos]. Isso porque, diferentemente das ciências exatas, em que o objeto de interesse pode ser mensurado diretamente, é frequente nas ciências sociais e aplicadas  a mensuração indireta, especialmente quando o objeto apresenta um alto grau de abstração. Com efeito, o viés de confirmação é um construto e não pode ser medido diretamente. Ele só pode ser medido por via indireta e a decisão de como operacionalizá-lo em variáveis concretas e quais os indicadores serão utilizados para medi-lo cabe ao pesquisador, fundamentado em pesquisa bibliográfica, discussão com seus pares e observação dos dados disponíveis. 
+
+Há um ampla bibliografia sobre a escolha e construção de escalas para a  mensuração de conceitos abstratos[@devellis2016scale;@carmines1979reliability;@netemeyer2003scaling]. E quanto ao viés de contaminação, este pode ser medido por mais de uma via. Pode-se comparar decisões de juízes que atuaram em ambas as fases com juízes que só atuaram na instrução e julgamento. No entanto, essa opção não é viável na presente pesquisa porque os juizados de garantia são de implementação recente.
+
+Igualmente, pode-se medir por meio de experimento, criando grupos de tratamento (juiz que atuaram em ambas as fases) e controle (juiz que só atuaram na fase de julgamento) e verificar se algum dos grupos é mais severo. No entanto, experimento em casos criminais reais implicariam em potenciais violações éticas.
+
+Esta pesquisa optou por quantificar o grau de contaminação do juiz de primeiro grau mediante a verificação da taxa de manutenção das sentenças nas decisões colegiadas de segundo grau. Isso porque o juiz de segunda instância está distante dos fatos e da investigação e analisaria os autos com maior imparcialidade. 
+
+Curioso é que diversos estudos têm apontado a existência de uma baixa taxa de reversibilidade nos recursos da defesa[@sorrentino2022taxa; @junior2019taxa; @de2021ideologia], considerando que haveria uma presunção de correção da decisão judicial em primeira instância, dada sua maior proximidade ao fatos. Nessa perspectiva, as cortes superiores tenderiam a revisar apenas situações em que a decisão é claramente contrária à prova nos autos ou, como informa [@sorrentino2022taxa], a reversão das decisões na apelação da defesa, quando ocorre, em sua maioria, serve para ajustar a dosimetria da pena.
+
+Dessa forma, a análise focará na comparação entre decisões de segunda instância que confirmam ou não decisões de primeira instância. Além disso, serão apresentados dados sobre o perfil do processamento dos casos criminais na polícia e no judiciário.
+
+O presente texto oferece uma visão geral da criminalidade no Brasil e especificamente em São Paulo, bem como, a resposta ao crime de cada uma das instâncias do sistema de justiça criminal. O objetivo é, num primeiro momento, mostrar a quantidade de ocorrências criminais e a reduzida parcela dela que é processada pela justiça e a parcela ainda menor que leva a uma condenação. Nessa primeira parte, o objetivo não é demonstrar que há ou não viés de confirmação, mas evidenciar que ao juiz somente chega uma parcela diminuta da criminalidade, cuja prova da materialidade delitiva e da autoria já passaram pelo crivo das polícias e do Ministério Público.
+
+No segundo momento, dessa pequena parcela da criminalidade que é processada, verificar se há viés de confirmação nas decisões dos juízes que atuaram tanto na fase investigatória quanto na fase de instrução e julgamento.
+
+
+## Visão geral da criminalidade no Brasil e em São Paulo
+
+
+A @tbl-senasp mostra os números dos principais crimes no Brasil, segundo a Secretaria Nacional de Segurança Pública (Senasp), órgão do Ministério da Justiça e da Segurança Pública.^[Fonte: https://www.gov.br/mj/pt-br/assuntos/sua-seguranca/seguranca-publica/estatistica. `{r} acesso`]. 
+
+```{r}
+#| label: tbl-senasp
+#| tbl-cap: "Principais crimes no Brasil de 2015 a 2022"
+
+senasp <- readxl::read_excel(here::here("data-raw/indicadoressegurancapublicauf.xlsx")) |> 
+     janitor::clean_names() 
+senasp |> 
+   group_by(ano,tipo_crime) |> 
+   summarize(total = sum(ocorrencias)) |> 
+   setNames(c("ano","Crime","total")) |> 
+  pivot_wider(names_from ="ano", values_from = "total") |> 
+  flextable() |> 
+  fft()
+```
+
+
+Uma outra fonte relevante é o Atlas da Violência, mantido pelo Instituto de Pesquisas Econômicas(IPEA)
+Embora os homicídios não representem toda a criminalidade, muitos institutos de pesquisa optam por divulgar estatísticas de homicídio porque ele tem maior probabilidade de ser reportado às autoridades que outros crimes. A cifra oculta do homicídio tende a ser menor. O homicídio também está correlacionado com outros crimes, onde há altas taxas de homicídio, há também altas taxas de outros crimes. Além disso, ele é um crime de mais fácil comparação entre países para medir medir a violência ^[para uma revisão da literatura acerca do tema, consulte [@van2023can]]. 
+
+O @fig-homicidios mostra a evolução das taxas de homicídio ao longo dos anos, segundo o Atlas da Violência do IPEA ^[Dado obtido via API do IPEA. Disponível em: https://www.ipea.gov.br/atlasviolencia/api. Acessado em: 10/05/2025]. 
+
+```{r}
+homicidios_brasil <- atlas_extrair_series("328","1") |> 
+  mutate(periodo = ymd(periodo),,
+         ano = year(periodo))
+```
+
+```{r}
+#| label: fig-homicidios
+#| fig-cap: "Homicídios no Brasil (1989–2022)"
+#| fig-cap-location: top
+#| fig-width: 10
+#| fig-height: 5
+homicidios_brasil |> 
+ ggplot(aes(x = periodo, y = valor, group = 1)) +
+  geom_line(color = "darkred", linewidth = 1) +
+  geom_point(color = "darkred") +
+  labs(#title = "Homicídios no Brasil (1989–2022)",
+       x = "Ano",
+       y = "Número de homicídios") +
+  scale_x_date(date_breaks = "5 years", date_labels = "%Y") +
+  scale_y_discrete()+
+  theme_minimal()
+```
+
+
+Não são todos os crimes que oferecem alta correlação com o homicídio, mas o roubo de veículo parece acompanhar as mesmas tendências. O @fig-homicidio_roubo ilustra isso. Como o número de roubos é muito maior que o de homicídios, optou-se por aplicar uma tranformação logarítimica (log10) para facilitar a visualização das duas tendências.
+
+```{r}
+#| label: fig-homicidio_roubo
+#| fig-cap: "Evolução dos homicídios e do roubo de veículos no Brasil de 2015 a 2022"
+#| fig-cap-location: top
+senasp |> 
+       group_by(ano,tipo_crime) |> 
+      summarize(total = sum(ocorrencias)) |> 
+      filter(tipo_crime == "Homicídio doloso" | tipo_crime == "Roubo de veículo") |> 
+      ggplot(aes(x = ano, y = total, color = tipo_crime)) +
+     geom_line() +
+     scale_y_log10(labels = scales::number_format(accuracy = 1))+
+     scale_color_manual(values = c("darkred","darkblue"))+
+      guides(color = guide_legend(position = "bottom"))+
+     labs(x = "Ano", y = "Número de crimes",  color = "Crime",
+          caption = "Fonte: Secretaria Nacional de Segurança Pública")+
+     theme_minimal()
+      
+
+```
+
+A @tbl-criminalidade revela a criminalidade no estado de São Paulo de 2018 a 2024.
+
+```{r}
+#| label: tbl-criminalidade
+#| tbl-cap: "Criminalidade no estado de São Paulo entre 2018 e 2024"
+crimes <- 2018:2024 |>
+  map_dfr(~{
+   .x |> 
+    extrair_ssp_crimes() |> 
+     purrr::pluck("data","listaDados") |> 
+     purrr::map_dfr(~{
+       ano <- .x$ano
+       total <-.x$total
+       delito <- .x$delito$delito
+       
+       tibble::tibble(ano, delito, total)
+     })
+})
+
+totais <- crimes |> 
+    group_by(ano) |> 
+    summarize(delito = "TOTAL",
+              total = sum(total))
+
+
+crimes <- bind_rows(totais,crimes)   
+
+
+crimes |> 
+   group_by(ano,delito) |> 
+   setNames(c("ano","Crime","total")) |> 
+  pivot_wider(names_from ="ano", values_from = "total") |> 
+  flextable() |> 
+  fft()
+```
+
+Similarmente ao que ocorre em âmbito nacional, em São Paulo, roubos de veículos e homicídios seguem a mesma tendência. Vale lembrar que esses são crimes praticados com o uso de violência. Crimes sem o uso de violência não necessariamente seguem a mesma tendência do homicídio.
+
+```{r}
+#| label: fig-homicidio_roubo_sp
+#| fig-cap: "Comparação entre homicídio delogo e roubo de veículo em São Paulo"
+crimes |> 
+  group_by(ano,delito) |> 
+  summarize(total = sum(total)) |> 
+  filter(delito == "HOMICÍDIO DOLOSO (2)" | delito == "ROUBO DE VEÍCULO") |> 
+  ggplot(aes(x = ano, y = total, color = delito)) +
+  geom_line() +
+  scale_y_log10(labels = scales::number_format(accuracy = 1))+
+  scale_color_manual(values = c("darkred","darkblue"))+
+        guides(color = guide_legend(position = "bottom"))+
+
+  labs(x = "Ano", y = "Número de crimes",  color = "Crime",
+       caption = "Fonte: Secretaria de Segurança Pública de São Paulo")+
+  theme_minimal()
+```
+
+
+## Resposta policial à criminalidade no estado de São Paulo
+
+A @tbl-produtividade mostra as ocorrências criminais registradas pela polícia em São Paulo, bem como, o número de flagrantes e o número de inquéritos policiais registrados. Quando comparamos com o total de ocorrências mostradas na @tbl-criminalidade, verificamos que o número é inquéritos instaurados é quatro vezes menor do que o número de crimes que chegam ao conhecimento das autoridades policiais. Se considerarmos a cifra oculta, ou seja, a criminalidade que não chega ao conhecimento das autoridades policiais, essa relação aumentaria para dez vezes. Com efeito, as pesquisas baseadas na PNAD indicam que 62,55% da criminalidade não é comunicada à polícia[@caetano2020determinantes].
+
+```{r}
+#| label: tbl-produtividade
+#| tbl-cap: "Produtividade"
+produtividade <- 2018:2024 |>
+  map_dfr(~{
+   .x |> 
+    extrair_ssp_produtividade()  |> 
+     purrr::pluck("data","listaDados") |> 
+     purrr::map_dfr(~{
+       ano <- .x$ano
+       total <-.x$total
+       delito <- .x$delito$delito
+       
+       tibble::tibble(ano, delito, total)
+     })
+})
+
+produtividade |> 
+   group_by(ano,delito) |> 
+   setNames(c("ano","Produtividade","total")) |> 
+  pivot_wider(names_from ="ano", values_from = "total") |> 
+  flextable() |> 
+  fft()
+```
+
+## Resposta do Ministério Público à criminalidade no estado de São Paulo
+
+A tabela abaixo mostra o número de denúncias oferecidas pelo Ministério Público ao longo dos anos. Quando comparado ao número total de ocorrências criminais, o número de denúncias é significativamente pequeno.
+
+A comparação entre o número de ocorrências criminais e o número de denúncias oferecidas pelo Ministério Público (@tbl-crimnialidade e @tbl-denuncias) revela que apenas uma pequena parcela dos crimes é efetivamente processada pela justiça. Isso pode ser resultado de diversos fatores, como a falta de provas, a dificuldade em identificar os autores dos crimes, e a sobrecarga do sistema de justiça.
+
+
+
+```{r}
+#| label: tbl-denuncias
+#| tbl-cap: "Denúncias recebidas pelo TJSP"
+
+
+arquivo <- here::here("data-raw/Pesquisa_CPA_2024_032303_Dr_GILSON (1).xlsx")
+planilhas <- openxlsx::getSheetNames(arquivo)
+
+lista <- planilhas |> 
+    purrr::map(~{
+      readxl::read_xlsx(arquivo, sheet = .x)
+    })
+
+
+
+#glossario <- lista[[15]]
+
+lista[[2]] |> 
+  janitor::clean_names() |> 
+  group_by(ano) |> 
+  summarise(total = sum(denuncia)) |> 
+  flextable() |> 
+  fft()
+
+```
+
+
+
+# Resposta do Judiciário à criminalidade no estado de São Paulo
+
+O TJSP forneceu informações anuais de sentenças em primeiro grau bem como de acórdãos em segundo grau. As sentenças de primeiro grau vieram sem o número de processo, apenas o ano, 2018 a 2023, a classe processual, o assunto (crime) e o resultado do julgamento. Assim mesmo, a lista de crimes não veio padronizada. Por exemplo, furto, ora veio como furto, ora como furto(155) ou furto(art. 155). Como a lista é muito grande, optou-se por submeter a lista à API da OPENAI para padronizá-la com instruções como remover a qualificadora e juntar crimes específicos na modalidade  genérica. 
+
+A lista do segundo grau veio com o número do processo, a classe processual, o assunto(crime), a data da distribuição, a data do julgado, o apelante e o resultado o julgamento.
+
+
+## Decisões de primeiro grau
+
+```{r}
+#| label: chunk-primeira_instancia
+pg <- DBI::dbGetQuery(conn,"select * from primeiro_grau")
+total_pg <- nrow(pg)
+```
+
+A tabela abaixo mostra a quantidade de sentenças prolatadas por ano de 2018 a 2023. O TJSP não forneceu informações de 2024. Para essa pesquisa, no entanto, é relevante ter os dados de 2022 e 2023, quando a pandemia já havia sido superada. Além disso, ao longo do levantamento, esses dados são os mais consistentes e próximos das coleta.
+
+```{r}
+#| label: tbl-total_primeira_instancia
+#| tbl-cap: "Quantidade de sentenças por ano de 2018 a 2023 em São Paulo"
+
+pg |> 
+   group_by(ano) |> 
+   summarize(n = n()) |> 
+   pivot_wider(names_from = "ano", values_from = "n") |> 
+   flextable() |> 
+  fft()
+```
+
+
+A @tbl-sentenca-merito  mostra a quantidade de decisões anuais conforme o mérito. Algumas sentenças são mistas, no sentido de que condenaram um ou mais réus e absolveram outros.
+
+
+```{r}
+#| label: tbl-sentenca-merito
+#| tbl-cap: "Sentenças anuais no TJSP conforme o mérito"
+pg |> 
+  count(ano, resumo) |> 
+  pivot_wider(names_from = "ano", values_from = "n")
+  
+  
+```
+
+A @tbl-crimes_primeiro_grau mostra o número de sentenças desagregadas por crime.  O tráfico de drogas segue sendo o crime com o maior número de processos, seguido pelo furto, roubo e violência doméstica.
+
+```{r}
+#| label: tbl-crimes_primeiro_grau
+#| tbl-cap: ""
+ pg |> 
+    count(crime, ano,  sort = T) |> 
+   filter(crime != '') |> 
+    pivot_wider(names_from = "ano", values_from = "n") |> 
+    select(Crime = crime, as.character(2018:2023))|> 
+    slice(1:15) |> 
+   flextable() |> 
+  fft()
+```
+
+
+Por fim, a @fig-funil mostra a queda do número dos crimes punidos ao longo da persecução penal.
+
+```{r}
+#| label: fig-funil
+#| fig-cap: "Redução da persecução penal desde o crime até a sentença"
+numeros_2022 <- c(ocorrencias = "1.423.496", inqueritos = "359.598", denuncias = "198.595", sentencas = "116.769", condenacoes = "95.026")
+
+texto <- glue::glue("Ocorrências: {numeros_2022['ocorrencias']}; Inquéritos: {numeros_2022['inqueritos']}; Denúncias: {numeros_2022['denuncias']}; Sentenças: {numeros_2022['sentencas']}; Condenacoes: {numeros_2022['condenacoes']}") |> 
+   str_split_1(";")
+
+JurisVis::gg_funnel(x = tjsp::numero(numeros_2022), text = texto)
+
+```
+
+
+
+## Apelações
+
+A análise dos dados da segunda instância optou por usar duas abordagens. A primeira considerou os dados fornecidos pelo TJSP em resposta à solicitação desta pesquisa.  A segunda considerou dados coletados via raspagem de dados, cuja metodologia será explicada mais adiante.
+
+A primeira abordagem considerou todas as apelações julgadas entre 2015 e 2023. Essa base contêm informações do crime, do apelante, da data do julgamento, da data da autuação e da decisão de mérito. No entanto, ela não faz qualquer referência ao resultado do julgado de primeira instância. Além disso, muitos processos iniciaram antes de 2015 e há poucas informações disponíveis de processos iniciados antes desse período. 
+
+Para superar essa limitação, adotou-se uma segunda abordagem, que foi coletar via raspagem de dados, as informações processuais. No entanto, como o volume é grande, quase 500 mil processos distribuídos desde 2015, preferiu-se obter uma amostra, conforme regras explicadas mais adiante. Uma das vantagens dessa amostra foi poder acessar mais detalhes processuais, como a informação do número de processos em que houve flagrante. 
+
+
+### Análise da base com todas as apelações
+
+```{r}
+apelacoes <- DBI::dbGetQuery(conn,"select crime, apelante, ano, merito2 as merito from apelacoes2 ") |> 
+   mutate(apelante = ifelse(apelante == 'Minstério Público', 'Ministério Público',apelante),
+     merito = str_to_sentence(merito,locale ="pt"))
+
+```
+
+
+A @tbl-resultadoApelacoes mostra os resultados das apelações conforme o apelante e o ano. É fácil ver que as apelações da defesa são em maior número. No entanto, esta alcança uma menor taxa de provimento quando comparada às apelações do Ministério Público.
+
+```{r}
+#| label: tbl-resultadoApelacoes
+#| tbl-cap: "Resultado das apelações no TJSP em matéria criminal conforme o ano e o apelante"
+apelacoes |> 
+    count(ano, apelante, merito) |> 
+    mutate(apelante = ifelse(apelante == 'Não MP', 'Defesa', apelante)) |> 
+    setNames(c("Ano","Apelante","Decisão","quantidade")) |> 
+    pivot_wider(names_from = "Ano", values_from = "quantidade") |> 
+    flextable() |> 
+    fft()
+```
+
+
+Na @fig-apelacao_defesa_mp são mostrados somente as decisões com mérito. Algumas transformações foram realizadas. Quando a apelação foi da defesa, o provimento parcial foi equiparada ao não provimento. Quando a apelação foi do Ministério Público, o provimento parcial foi equiparado a provimento. Isso porque o privimento parcial para a defesa, via de regra, confirma a condenação mas mitiga seus efeitos com redução da pena ou mudança de regime. Já o provimento parcial para o Ministério Público possivelmente indica uma reversão de absolvição para condenação.
+
+Nesse cenário, a segunda instância tende a condenar mais do que absolver.
+
+```{r}
+#| label: fig-apelacao_defesa_mp
+#| fig-cap: "Apelações"
+apelacoes |> 
+  filter(merito %in% c("Provimento","Provimento parcial","Não-provimento")) |> 
+    mutate(merito = case_when(
+      merito == "Provimento" ~ "Provimento",
+      merito == "Provimento parcial" & apelante == 'Não MP' ~ 'Não-provimento',
+      merito == "Provimento parcial" & apelante == 'Ministério Público' ~ 'Provimento',
+      TRUE ~ merito
+    )) |> 
+    count(apelante, merito, ano) |> 
+    mutate(apelante = ifelse(apelante == 'Não MP', 'Defesa', apelante)) |> 
+    mutate(ano = as.factor(ano)) |> 
+    ggplot(aes(x = n, y = ano, fill = merito))+
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = c("darkred","darkblue"))+
+    facet_grid(~apelante,scales = "free") +
+    guides(fill = guide_legend(position = "bottom"))+
+    theme_minimal()
+
+```
+
+
+A @fig-linhaApelacoes mostra os mesmos dados, mas em gráfico de linha. Aqui fica mais claro que há uma inversão. A defesa perde mais na segunda instância enquanto que o Ministério Público consegue mais reversões de absolvições.
+
+```{r}
+#| label: fig-linhaApelacoes
+#| fig-cap: "Respostas do TJSP às apelações do MP e da defesa em matéria criminal"
+apelacoes |> 
+   filter(merito %in% c("Provimento","Provimento parcial","Não-provimento")) |> 
+ mutate(merito = case_when(
+      merito == "Provimento" ~ "Provimento",
+      merito == "Provimento parcial" & apelante == 'Não MP' ~ 'Não-provimento',
+      merito == "Provimento parcial" & apelante == 'Ministério Público' ~ 'Provimento',
+      TRUE ~ merito
+    )) |> 
+    count(apelante, merito, ano) |> 
+    mutate(apelante = ifelse(apelante == 'Não MP', 'Defesa', apelante)) |> 
+    ggplot(aes(x = ano, y = n, color = merito, group = merito))+
+    geom_line()+
+    scale_color_manual(values = c("darkred","darkblue"))+
+    guides(color = guide_legend(position = "bottom"))+
+    facet_grid(~apelante, scales = "free_x") +
+    theme_minimal()
+```
+
+### Análise da amostra de processos
+
+O levantamento das apelações acima descrito limita-se ao resultado das decisões de segunda instância, sem uma referência clara à decisão de primeira instância. Além disso,  não informa quantas dessas decisões são resultado de flagrante. 
+
+O TJSP não disponibiliza uma lista completa de todos os processos distribuídos e tampouco a possibilidade de busca desses processos. Existe a opção de busca por [processos julgados](https://esaj.tjsp.jus.br/cjpg/), no entanto, ela não permite um controle sobre o ano da distribuição. 
+
+Para superar essa limitação, a pesquisa adotou a técnica de simular todas as distribuições possíveis de um processo judicial no TJSP. A construção do número do processo respeita as regras estabelecidas pela resolução 68/2008 do Conselho Nacional de Justiça. Os sete primeiros números são sequenciais, seguidos de dois dígitos verificacadores, calculados a partir dos demais números, seguidos do ano da distribuição, do número do segmento da justiça, do número do tribunal e do código do foro onde foi distruídos. 
+
+O dígito verificador é calculado usando o módulo 11, que basicamente usa aritmética modular para garantir a integridade e validade de um número, de modo a minimizar erros de digitação. Para chegar ao dígito verificador do número do CNJ, multiplica-se cada valor por um peso e divide-se a soma desses produtos por 11. O resto dessa divisão é o dígito. Como são dois dígitos, esse processo é realizado em duas etapas para obter um dígito de cada vez.
+
+O TJSP forneceu os códigos de todos os distribuidores. Dessa forma, foi possível criar artificialmente todos os números de processos distribuídos por ano. Existe uma [API (aplication programming interface) do TJSP](https://api.tjsp.jus.br/) que permite consulta rápida mas não detalhada dos processos. Por ela, conhecemos o assunto, a classe processual e a data da distribuição. Esses dados foram suficientes para selecionar os processos a serem analisados.
+
+Para evitar qualquer viés inserido pelo período pandêmico, foram coletados apenas processos distribuídos antes e depois desse período, ou seja, dos anos 2018, 2019, 2023 e 2024. Os anos de 2020 e 2021 foram excluídos. Além disso, foram excluídos os processos sobre crimes contra a vida e foram mantidas somente as ações penais em rito ordinário e rito sumário. Inquérito policial, rito sumaríssimo e rito do tribunal do júri foram excluídos. 
+
+Ao final, restaram `{r} total` ações penais distribuídas nos quatro anos mencionados. Desse número, foi inicialmente retirada uma amostra aleatória de `{r} n_amostra_inicial`. A razão para amostrar, em vez de trabalhar com o universo populacional, está na limitação de tempo e de recursos computacionais iniciais. Ademais, uma amostra de 20.000 processos reduz a margem de erro significativamente.
+
+
+- Tamanho da populacao: $N = 488{,}867$  
+- Amostra: $n = 20{,}000$  
+- Proporção estimada: $p = 0.5$  
+- Intervalo de confiança: 95% ($z = 1.96$)
+
+A fórmula para cálcula da margem de erro é:
+$$
+\text{ME} = z \times \sqrt{\frac{p(1 - p)}{n}}
+$$
+Aplicando os valores à fórmula:
+
+$$
+\text{ME} = 1,96 \times \sqrt{\frac{0,5 \times 0,5}{20000}} = 1,96 \times \sqrt{\frac{0,25}{20000}} = 1,96 \times \sqrt{0,0000125}
+$$
+
+$$
+\text{ME} = 1,96 \times 0,003536 = 0,00693 \quad \text{(ou } 0,693\% \text{)}
+$$
+
+Aplicando a correção para população finita:
+
+Como a amostra representa uma fração significativa da população, aplicamos a Correção para População Finita (CPF).:
+
+$$
+\text{CPF} = \sqrt{\frac{N - n}{N - 1}} = \sqrt{\frac{488{.}867 - 20{.}000}{488{.}866}} = \sqrt{\frac{468{.}867}{488{.}866}} \approx \sqrt{0,9589} \approx 0,9792
+$$
+
+Ajustando a margem de erro:
+
+$$
+\text{ME}_{\text{adj}} = \text{ME} \times \text{CPF} = 0,00693 \times 0,9792 = 0,00679 \quad \text{(ou } 0,679\% \text{)}
+$$
+
+
+Com uma amostra de 20.000 indivíduos de uma população de 488.867, a margem de erro  (ME) para estimar uma proporção de 50% com 95% de confiança é de aproximadamente 0,679. Essa margem de erro é suficientemente baixa para estimar os valores totais.
+
+Por meio da técnica de raspagem de dados, facilitada por um programa de computador já escrito e publicamente disponibilizado para uso em linguagem de progrmação R, o pacote TJSP[@tjsp], foram baixadas as movimentações processuais dessa amostra. 
+
+Como o objetivo principal desse capítulo é verificar a taxa de confirmação, em segunda instância, da decisão de primeira instância, deveriam ser mantidos somente os processos que com apelação apreciada por um câmara de direito criminal do TJSP. Assim, após baixar a movimentação processual, foram aplicados filtros para preservar somente os processos com acórdãos. 
+
+Acontece que nem sempre essa informação estava explícita e, a partir da amostra, verificou-se que menos de 1/6 (um sexto)  dos processos baixados continham informações completas. Dessa forma, optou-se por aumentar a amostra para 
+processos. 
+
+Dessa amostra, foram coletados aqueles processos com a informação do resultado da segunda instância em relação à primeira instância. A @tbl-primeira_segunda mostra que a segunda instância raramente reverte sentenças absolutórias. 
+
+```{r}
+#| label: tbl-primeira_segunda
+#| tbl-cap: "Decisões de segunda instância do TJSP em relação à primeira instância."
+
+q <- "with cte as (
+select cdprocesso from historico_parte_historico where evento ~* 'Acórdão'
+)
+select * from historico_parte_historico d1 where exists 
+(select from cte 
+where d1.cdprocesso = cte.cdprocesso)"
+
+base <- DBI::dbGetQuery(conn, q)
+
+
+sentenca <- base |> 
+  filter(str_detect(evento, "^(?i)sentença"))
+
+condena <- base |> 
+  filter(str_detect(evento, "(?i)sentença condena"))
+
+ base |> 
+  filter(cdprocesso %in% condena$cdprocesso, str_detect(evento, "(?i)Acórdão - Sentença")) |> 
+    separate_wider_delim(cols = evento, delim = '/', names = c("sentenca","acordao"), too_many = "drop",
+                         too_few = "align_start") |> 
+      filter(str_detect(acordao,'(?i)(condena|abso)')) |> 
+    mutate(sentenca = str_extract(sentenca, "Senten.+"),
+           acordao = ifelse(str_detect(acordao,"(?i)condena"), "Condenatória","Absolutória")) |> 
+      count(sentenca,acordao) |> 
+  flextable() |> 
+  fft()
+
+```
+
+
+### Registros de flagrantes na justiça
+
+```{r}
+flagrante <- DBI::dbGetQuery(conn,"select * from cpopg_mov 
+                             where descricao ~* 'flagrante'")
+
+
+auto <- DBI::dbGetQuery(conn,"select * from cpopg_historico_classes
+                        where classe = 'Auto de Prisão em Flagrante'")
+
+
+flagrantes  <- union(auto$processo, flagrante$processo)
+n_flagrantes <- length(flagrantes)
+```
+
+Por fim, cabe mencionar que, da amostra de `{r} n_amostra_ampliada`, em `{r} n_flagrantes` há informação de que houve auto de prisão em flagrante. Não é tão simples coletar essa informação, pois nem sempre está explícita e o tribunal não informa, na tabela de documentos, qual documento é auto de flagrante. Certo é que, ao menos a metade dos processos são resultado de flagrante.
+
+## Conclusão
+
+Os resultados deste estudo sugerem que a participação do juiz no controle do inquérito policial não resulta em contaminação ou viés de confirmação que prejudique sua imparcialidade na fase de instrução e julgamento. A análise das apelações revelou que o Tribunal de Justiça de São Paulo mantém uma postura rigorosa na análise das decisões de primeiro grau, não demonstrando uma tendência sistemática a confirmar as decisões. Além disso, a taxa de provimento das apelações do Ministério Público e da defesa são similares, o que indica que não há um viés pró-acusação nas decisões de segunda instância. A ausência de contaminação pode ser atribuída a diversos fatores, como o treinamento dos juízes, o sistema de recursos, e a cultura de imparcialidade presente no Poder Judiciário. A maior severidade do segundo grau, conforme observado, parece estar relacionada a uma busca por uma decisão mais justa e fundamentada, e não a uma contaminação do juiz. É importante reconhecer as limitações deste estudo, como a impossibilidade de medir diretamente a contaminação e o viés de seleção dos casos analisados. Sugerimos que futuras pesquisas explorem essa questão por meio de análises qualitativas das decisões judiciais e de estudos sobre a implementação dos juizados de garantia.
+
+## Bibliografia
+
