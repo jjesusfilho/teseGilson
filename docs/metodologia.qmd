@@ -25,6 +25,7 @@ library(officedown)
 library(officer)
 library(knitr)
 library(scales)
+library(gt)
 # Format integers
 knit_print.integer = function(x, ...) {
   prettyNum(x, big.mark=".", decimal.mark = ",")
@@ -310,7 +311,7 @@ lista[[2]] |>
 
 # Resposta do Judiciário à criminalidade no estado de São Paulo
 
-O TJSP forneceu informações anuais de sentenças em primeiro grau bem como de acórdãos em segundo grau. As sentenças de primeiro grau vieram sem o número de processo, apenas o ano, 2018 a 2023, a classe processual, o assunto (crime) e o resultado do julgamento. Assim mesmo, a lista de crimes não veio padronizada. Por exemplo, furto, ora veio como furto, ora como furto(155) ou furto(art. 155). Como a lista é muito grande, optou-se por submeter a lista uma API de inteligência artificial generativa^[Foi criada uma instrução para o GPT da empresa OPENAI, cf: https://openai.com/api/, a fim de que esta padronizasse os nomes dos crimes.] para padronizá-la com instruções como remover a qualificadora e juntar crimes específicos na modalidade  genérica. 
+O TJSP forneceu informações anuais de sentenças em primeiro grau bem como de acórdãos em segundo grau. As sentenças de primeiro grau vieram sem o número de processo, apenas o ano, 2018 a 2023, a classe processual, o assunto (crime) e o resultado do julgamento. Assim mesmo, a lista de crimes não veio padronizada. Por exemplo, furto, ora veio como furto, ora como furto(155) ou furto(art. 155). Como a lista é muito grande, optou-se por submetê-la a uma API de inteligência artificial generativa^[Foi criada uma instrução para o GPT da empresa OPENAI, cf: https://openai.com/api/, a fim de que esta padronizasse os nomes dos crimes.] para padronizá-la com instruções como remover a qualificadora e juntar crimes específicos na modalidade  genérica. 
 
 A lista do segundo grau veio com o número do processo, a classe processual, o assunto(crime), a data da distribuição, a data do julgado, o apelante e o resultado o julgamento.
 
@@ -558,7 +559,7 @@ Para superar essa limitação, a pesquisa adotou a técnica de simular todas as 
 
 O dígito verificador é calculado usando o módulo 11, que basicamente usa aritmética modular para garantir a integridade e validade de um número, de modo a minimizar erros de digitação. Para chegar ao dígito verificador do número do CNJ, multiplica-se cada valor por um peso e divide-se a soma desses produtos por 11. O resto dessa divisão é o dígito. Como são dois dígitos, esse processo é realizado em duas etapas para obter um dígito de cada vez.
 
-O TJSP forneceu os códigos de todos os distribuidores. Dessa forma, foi possível criar artificialmente todos os números de processos distribuídos por ano. Existe uma [API (aplication programming interface) do TJSP](https://api.tjsp.jus.br/) que permite consulta rápida mas não detalhada dos processos. Por ela, conhecemos o assunto, a classe processual e a data da distribuição. Esses dados foram suficientes para selecionar os processos a serem analisados.
+O TJSP forneceu os códigos de todos os distribuidores. Dessa forma, foi possível criar artificialmente todos os números de processos distribuídos por ano. Existe uma [API (application programming interface) do TJSP](https://api.tjsp.jus.br/) que permite consulta rápida mas não detalhada dos processos. Por ela, conhecemos o assunto, a classe processual e a data da distribuição. Esses dados foram suficientes para selecionar os processos a serem analisados.
 
 Para evitar qualquer viés inserido pelo período pandêmico, foram coletados apenas processos distribuídos antes e depois desse período, ou seja, dos anos 2018, 2019, 2023 e 2024. Os anos de 2020 e 2021 foram excluídos. Além disso, foram excluídos os processos sobre crimes contra a vida e foram mantidas somente as ações penais em rito ordinário e rito sumário. Inquérito policial, rito sumaríssimo e rito do tribunal do júri foram excluídos. 
 

@@ -14,15 +14,15 @@ conn <- DBI::dbConnect(odbc::odbc(), Driver = "PostgreSQL Unicode",
 
 DBI::dbExecute(conn,"set search_path = gilson")
 
-leitura <- DBI::dbGetQuery(conn,"select cdprocesso from historico_parte_coletado d1
-                           where not exists(
-                           select from historico_parte_principal d2
-                           where d1.cdprocesso = d2.cdprocesso
-                           )
-                           ")
+# leitura <- DBI::dbGetQuery(conn,"select cdprocesso from historico_parte_coletado d1
+#                            where not exists(
+#                            select from historico_parte_principal d2
+#                            where d1.cdprocesso = d2.cdprocesso
+#                            )
+#                            ")
 
 arquivos <- db |> 
-    dplyr::semi_join(leitura) |> 
+    ##dplyr::semi_join(leitura) |> 
     dplyr::pull(arquivo) |> 
     JurisMiner::dividir_sequencia(n = 2000)
 

@@ -7,26 +7,39 @@ conn <- DBI::dbConnect(odbc::odbc(), Driver = "PostgreSQL Unicode",
 
 DBI::dbExecute(conn,"set search_path = gilson")
 
-q <- "with cte as (
-     select id,  cd_processo,ano_recebimento, foro, 
-     row_number() over (partition by foro order by random())::int as n
+# q <- "with cte as (
+#      select id,  cd_processo,ano_recebimento, foro, 
+#      row_number() over (partition by foro order by random())::int as n
+#      from api_filtrada_com_entrancia d1
+#      where not exists(
+#      select from amostra d2
+#      where d1.cd_processo = d2.cd_processo
+#      )
+# )
+# select * from cte
+# where n >= 30 
+# order by random()
+# limit 120000"
+
+
+q <- "select cd_processo 
      from api_filtrada_com_entrancia d1
      where not exists(
-     select from amostra d2
-     where d1.cd_processo = d2.cd_processo
-     )
-)
-select * from cte
-where n >= 30 
-order by random()
-limit 120000"
+     select from historico_parte_coletado d2
+     where d1.cd_processo = d2.cdprocesso
+     )"
+
+# cd_processo <- DBI::dbGetQuery(conn, q) |> 
+#             dplyr::filter(n >= 30) |> 
+#             dplyr::group_by(foro) |> 
+#             dplyr::filter(dplyr::n() >= 30) |> 
+#             dplyr::pull(cd_processo) |> 
+# JurisMiner::dividir_sequencia(n = 3000)
 
 cd_processo <- DBI::dbGetQuery(conn, q) |> 
-            dplyr::filter(n >= 30) |> 
-            dplyr::group_by(foro) |> 
-            dplyr::filter(dplyr::n() >= 30) |> 
-            dplyr::pull(cd_processo) |> 
-JurisMiner::dividir_sequencia(n = 3000)
+  dplyr::pull(cd_processo) |> 
+  JurisMiner::dividir_sequencia(n = 3000)
+
 
 DBI::dbDisconnect(conn)
 
